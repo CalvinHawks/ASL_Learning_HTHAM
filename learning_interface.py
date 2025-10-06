@@ -26,7 +26,7 @@ class LearningInterface:
         self.feedback_message = ""
         self.feedback_color = (0, 255, 0)  # Green by default
         self.last_detection_time = 0
-        self.detection_cooldown = 1.0  # Seconds between detections
+        self.detection_cooldown = 0.5  # Shorter cooldown for more responsive detection
         
     def _load_lessons(self) -> List[Dict]:
         """Load predefined ASL learning lessons"""
@@ -139,7 +139,7 @@ class LearningInterface:
         # Check if detection matches target
         is_correct = detected_sign.upper() == target.upper()
         
-        if is_correct and confidence > 0.6:  # Minimum confidence threshold
+        if is_correct and confidence > 0.5:  # Lower confidence threshold for better detection
             self.correct_attempts += 1
             self.score += 1
             self.feedback_message = f"Correct! Great job! (Confidence: {confidence:.2f})"
@@ -148,8 +148,11 @@ class LearningInterface:
             # Move to next prompt
             self._next_prompt()
             
+            # Add a small delay to show the success message
+            time.sleep(0.5)
+            
         else:
-            if confidence <= 0.6:
+            if confidence <= 0.5:
                 self.feedback_message = f"Try again! Make sure your hand is clearly visible. (Confidence: {confidence:.2f})"
             else:
                 self.feedback_message = f"Not quite right. Try again! (Detected: {detected_sign}, Expected: {target})"
@@ -162,15 +165,19 @@ class LearningInterface:
         if not self.current_lesson:
             return
         
-        next_index = min(self.score, len(self.current_lesson["prompts"]) - 1)
-        
-        if next_index < len(self.current_lesson["prompts"]):
-            self.current_prompt = self.current_lesson["prompts"][next_index]["text"]
-        else:
+        # Check if lesson is complete
+        if self.score >= len(self.current_lesson["prompts"]):
             # Lesson completed
             self.current_prompt = "Lesson completed! Great job!"
             self.feedback_message = f"Final Score: {self.correct_attempts}/{self.total_attempts} correct!"
             self.feedback_color = (0, 255, 0)  # Green
+            print(f"Lesson completed! Score: {self.correct_attempts}/{self.total_attempts}")
+        else:
+            # Move to next prompt
+            next_index = self.score
+            if next_index < len(self.current_lesson["prompts"]):
+                self.current_prompt = self.current_lesson["prompts"][next_index]["text"]
+                print(f"Next prompt: {self.current_prompt}")
     
     def is_lesson_complete(self) -> bool:
         """Check if the current lesson is complete"""

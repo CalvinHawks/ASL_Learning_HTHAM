@@ -10,24 +10,31 @@ import json
 class ASLDetector:
     """ASL sign detection and recognition system"""
     
-    def __init__(self, model_path: str = "asl_model.pkl", scaler_path: str = "asl_scaler.pkl"):
+    def __init__(self, model_path: str = "asl_model.pkl", scaler_path: str = "asl_scaler.pkl", training_data_path: str = "training_data.json"):
         """
         Initialize the ASL detector
         
         Args:
             model_path: Path to save/load the trained model
             scaler_path: Path to save/load the feature scaler
+            training_data_path: Path to save/load training data
         """
         self.model_path = model_path
         self.scaler_path = scaler_path
+        self.training_data_path = training_data_path
         self.model = RandomForestClassifier(n_estimators=100, random_state=42)
         self.scaler = StandardScaler()
         self.label_to_sign = {}
         self.sign_to_label = {}
         self.is_trained = False
         
-        # Load existing model if available
+        # Initialize training data storage
+        self.training_features = []
+        self.training_labels = []
+        
+        # Load existing model and training data if available
         self.load_model()
+        self.load_training_data()
     
     def add_training_data(self, features: np.ndarray, label: str) -> None:
         """
@@ -37,16 +44,15 @@ class ASLDetector:
             features: Feature vector from hand landmarks
             label: ASL sign label (e.g., "A", "B", "HELLO")
         """
-        if not hasattr(self, 'training_features'):
-            self.training_features = []
-            self.training_labels = []
-        
-        self.training_features.append(features)
+        self.training_features.append(features.tolist())  # Convert to list for JSON serialization
         self.training_labels.append(label)
+        
+        # Save training data immediately
+        self.save_training_data()
     
     def train_model(self) -> None:
         """Train the ASL recognition model"""
-        if not hasattr(self, 'training_features') or len(self.training_features) == 0:
+        if len(self.training_features) == 0:
             print("No training data available. Please add training data first.")
             return
         
@@ -132,6 +138,32 @@ class ASLDetector:
             except Exception as e:
                 print(f"Error loading model: {e}")
                 self.is_trained = False
+    
+    def save_training_data(self) -> None:
+        """Save training data to file"""
+        try:
+            training_data = {
+                'features': self.training_features,
+                'labels': self.training_labels
+            }
+            with open(self.training_data_path, 'w') as f:
+                json.dump(training_data, f)
+        except Exception as e:
+            print(f"Error saving training data: {e}")
+    
+    def load_training_data(self) -> None:
+        """Load training data from file"""
+        if os.path.exists(self.training_data_path):
+            try:
+                with open(self.training_data_path, 'r') as f:
+                    training_data = json.load(f)
+                    self.training_features = training_data.get('features', [])
+                    self.training_labels = training_data.get('labels', [])
+                print(f"Loaded {len(self.training_features)} training samples")
+            except Exception as e:
+                print(f"Error loading training data: {e}")
+                self.training_features = []
+                self.training_labels = []
 
 class FingerspellingDetector:
     """Fingerspelling recognition for individual letters A-Z"""
@@ -192,10 +224,10 @@ class FingerspellingDetector:
         
         # Letter F: Index and thumb touching, others extended
         patterns['F'] = {
-            'extended_fingers': 4,
+            'extended_fingers': 3,
             'thumb_position': 'touching_index',
             'hand_closed': False,
-            'fingers_touching': True,
+            'fingers_touching': False,
             'thumb_index_touch': True
         }
         
