@@ -33,11 +33,11 @@ class ASLLearningApp:
         self.fingerspelling_detector = None
         self.learning_interface = None
         self.running = False
-        self.detection_mode = "fingerspelling"  # "fingerspelling", "asl", "auto"
+        self.detection_mode = "auto"  # "fingerspelling", "asl", "auto" - Start with auto mode
         
         # Detection settings
-        self.min_confidence = 0.6
-        self.detection_interval = 0.5  # Seconds between detections
+        self.min_confidence = 0.5  # Lower threshold for better detection
+        self.detection_interval = 0.3  # Shorter interval for more responsive detection
         self.last_detection_time = 0
         
         
@@ -54,11 +54,16 @@ class ASLLearningApp:
             True if initialization successful, False otherwise
         """
         try:
-            # Initialize camera
-            self.cap = cv2.VideoCapture(self.camera_index)
+            # Initialize camera with Windows DirectShow backend
+            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
             if not self.cap.isOpened():
                 print(f"Error: Could not open camera {self.camera_index}")
-                return False
+                print("Trying alternative camera initialization...")
+                # Try without backend specification
+                self.cap = cv2.VideoCapture(self.camera_index)
+                if not self.cap.isOpened():
+                    print(f"Error: Camera {self.camera_index} still not accessible")
+                    return False
             
             # Set camera properties for better performance
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -102,10 +107,10 @@ class ASLLearningApp:
         print("  'l' - Load progress")
         print("  'q' or ESC - Quit")
         print("\nTraining Instructions:")
-        print("  1. Start a lesson (fingerspelling works immediately)")
-        print("  2. For ASL signs: Press 't' while signing each letter/word")
+        print("  1. Start a lesson (auto mode uses best available detector)")
+        print("  2. To improve accuracy: Press 't' while signing each letter/word")
         print("  3. Collect 5+ samples per sign, then press 's' to train")
-        print("  4. Switch to ASL mode with 'm' to use trained model")
+        print("  4. Trained ASL model will be used automatically in auto mode")
         print("\nStarting camera...")
         
         # Start with the first lesson
@@ -118,6 +123,11 @@ class ASLLearningApp:
                 success, frame = self.cap.read()
                 if not success:
                     print("Error: Could not read from camera")
+                    print("This might be due to:")
+                    print("1. Camera being used by another application")
+                    print("2. Camera permissions not granted")
+                    print("3. Camera hardware issues")
+                    print("4. Driver problems")
                     break
                 
                 # Process frame
@@ -167,8 +177,14 @@ class ASLLearningApp:
             if detected_sign and confidence > self.min_confidence:
                 current_time = time.time()
                 if current_time - self.last_detection_time > self.detection_interval:
-                    self.learning_interface.check_answer(detected_sign, confidence)
+                    is_correct = self.learning_interface.check_answer(detected_sign, confidence)
                     self.last_detection_time = current_time
+                    
+                    # Debug output
+                    if is_correct:
+                        print(f"[SUCCESS] Correct detection: {detected_sign} (confidence: {confidence:.2f})")
+                    else:
+                        print(f"[INFO] Detection: {detected_sign} (confidence: {confidence:.2f})")
             
             # Draw detection info on frame
             self.draw_detection_info(annotated_frame, detected_sign, confidence)
@@ -196,14 +212,28 @@ class ASLLearningApp:
         elif self.detection_mode == "asl":
             features = self.hand_tracker.extract_features(landmarks)
             return self.asl_detector.predict(features)
-        else:  # auto mode
-            # Try fingerspelling first, then ASL
-            sign, conf = self.fingerspelling_detector.detect_fingerspelling(landmarks)
-            if conf > 0.7:
-                return sign, conf
+        else:  # auto mode - prioritize ASL model when trained
+            features = self.hand_tracker.extract_features(landmarks)
+            
+            # If ASL model is trained, use it first
+            if self.asl_detector.is_trained:
+                asl_sign, asl_conf = self.asl_detector.predict(features)
+                
+                # If ASL model has good confidence, use it
+                if asl_conf > 0.4:  # Lower threshold for trained model
+                    return asl_sign, asl_conf
+                
+                # Otherwise, try fingerspelling as backup
+                finger_sign, finger_conf = self.fingerspelling_detector.detect_fingerspelling(landmarks)
+                
+                # Return the result with higher confidence
+                if finger_conf > asl_conf:
+                    return finger_sign, finger_conf
+                else:
+                    return asl_sign, asl_conf
             else:
-                features = self.hand_tracker.extract_features(landmarks)
-                return self.asl_detector.predict(features)
+                # ASL model not trained, use fingerspelling
+                return self.fingerspelling_detector.detect_fingerspelling(landmarks)
     
     def draw_detection_info(self, frame: np.ndarray, detected_sign: str, confidence: float) -> None:
         """
@@ -217,8 +247,8 @@ class ASLLearningApp:
         if detected_sign and confidence > 0.3:
             # Draw detection box
             height, width = frame.shape[:2]
-            box_width = 300
-            box_height = 80
+            box_width = 350
+            box_height = 100
             x = width - box_width - 10
             y = 10
             
@@ -231,16 +261,37 @@ class ASLLearningApp:
                 overlay[y:y+box_height, x:x+box_width], alpha, 0
             )
             
+            # Get current target for comparison
+            current_target = self.learning_interface.get_current_target()
+            
             # Draw text
             sign_text = f"Detected: {detected_sign}"
             conf_text = f"Confidence: {confidence:.2f}"
-            mode_text = f"Mode: {self.detection_mode}"
             
-            cv2.putText(frame, sign_text, (x + 10, y + 25), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            cv2.putText(frame, conf_text, (x + 10, y + 45), 
+            # Show which detector is being used
+            if self.detection_mode == "auto":
+                if self.asl_detector.is_trained:
+                    mode_text = f"Mode: Auto (ASL Model)"
+                else:
+                    mode_text = f"Mode: Auto (Fingerspelling)"
+            else:
+                mode_text = f"Mode: {self.detection_mode.title()}"
+            
+            target_text = f"Target: {current_target}"
+            
+            # Color coding for detection
+            if detected_sign.upper() == current_target.upper() and confidence > 0.5:
+                text_color = (0, 255, 0)  # Green for correct
+            else:
+                text_color = (255, 255, 255)  # White for normal
+            
+            cv2.putText(frame, sign_text, (x + 10, y + 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
+            cv2.putText(frame, target_text, (x + 10, y + 40), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            cv2.putText(frame, mode_text, (x + 10, y + 65), 
+            cv2.putText(frame, conf_text, (x + 10, y + 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            cv2.putText(frame, mode_text, (x + 10, y + 80), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
     
     def draw_fps(self, frame: np.ndarray) -> None:
@@ -303,6 +354,9 @@ class ASLLearningApp:
         success, frame = self.cap.read()
         if not success:
             print("Could not capture frame for training")
+            # On-screen feedback
+            self.learning_interface.feedback_message = "Could not capture frame for training"
+            self.learning_interface.feedback_color = (0, 0, 255)
             return
         
         _, hand_landmarks_list = self.hand_tracker.process_frame(frame)
@@ -313,38 +367,59 @@ class ASLLearningApp:
             
             if features.size == 0:
                 print("Could not extract features from hand position")
+                # On-screen feedback
+                self.learning_interface.feedback_message = "Could not extract features from hand position"
+                self.learning_interface.feedback_color = (0, 0, 255)
                 return
             
             # Get target from current prompt
             target = self.learning_interface.get_current_target()
             if target:
                 self.asl_detector.add_training_data(features, target)
-                print(f"✓ Added training data for: {target}")
+                print(f"[OK] Added training data for: {target}")
                 print(f"  Features extracted: {len(features)} values")
                 
                 # Check if we have enough data to train
-                if hasattr(self.asl_detector, 'training_features'):
-                    total_samples = len(self.asl_detector.training_features)
-                    print(f"  Total training samples: {total_samples}")
-                    
-                    if total_samples >= 5:  # Minimum samples to train
-                        print("  Ready to train! Press 's' to save and train the model.")
-                    else:
-                        print(f"  Need {5 - total_samples} more samples to train.")
+                total_samples = len(self.asl_detector.training_features)
+                print(f"  Total training samples: {total_samples}")
+                
+                if total_samples >= 5:  # Minimum samples to train
+                    print("  Ready to train! Press 's' to save and train the model.")
+                    # On-screen feedback
+                    self.learning_interface.feedback_message = f"Sample added for {target}. Ready to train (press 's')."
+                    self.learning_interface.feedback_color = (0, 255, 0)
+                else:
+                    print(f"  Need {5 - total_samples} more samples to train.")
+                    # On-screen feedback
+                    remaining = max(0, 5 - total_samples)
+                    self.learning_interface.feedback_message = f"Sample added for {target}. Need {remaining} more."
+                    self.learning_interface.feedback_color = (0, 255, 255)
             else:
                 print("No current target for training. Make sure you're in a lesson.")
+                # On-screen feedback
+                self.learning_interface.feedback_message = "No target sign. Start/advance lesson."
+                self.learning_interface.feedback_color = (0, 0, 255)
         else:
             print("No hand detected for training. Make sure your hand is visible in the camera.")
+            # On-screen feedback
+            self.learning_interface.feedback_message = "No hand detected for training"
+            self.learning_interface.feedback_color = (0, 0, 255)
     
     def save_and_train_model(self) -> None:
         """Save progress and train the ASL model"""
         # Save learning progress
         self.learning_interface.save_progress()
         print("Learning progress saved!")
+        # On-screen feedback
+        self.learning_interface.feedback_message = "Progress saved"
+        self.learning_interface.feedback_color = (0, 255, 255)
         
         # Check if we have training data
-        if not hasattr(self.asl_detector, 'training_features') or len(self.asl_detector.training_features) == 0:
+        if len(self.asl_detector.training_features) == 0:
             print("No training data available. Use 't' to add training samples first.")
+            # On-screen feedback
+            self.learning_interface.feedback_message = "No training data. Press 't' to add samples."
+            self.learning_interface.feedback_color = (0, 0, 255)
             return
         
         # Train the model
@@ -352,13 +427,15 @@ class ASLLearningApp:
         self.asl_detector.train_model()
         
         # Show training summary
-        if hasattr(self.asl_detector, 'training_features'):
-            total_samples = len(self.asl_detector.training_features)
-            unique_signs = len(set(self.asl_detector.training_labels)) if hasattr(self.asl_detector, 'training_labels') else 0
-            print(f"✓ Model trained successfully!")
-            print(f"  Total samples: {total_samples}")
-            print(f"  Unique signs: {unique_signs}")
-            print("  You can now use ASL detection mode!")
+        total_samples = len(self.asl_detector.training_features)
+        unique_signs = len(set(self.asl_detector.training_labels))
+        print(f"[OK] Model trained successfully!")
+        print(f"  Total samples: {total_samples}")
+        print(f"  Unique signs: {unique_signs}")
+        print("  You can now use ASL detection mode!")
+        # On-screen feedback
+        self.learning_interface.feedback_message = f"Model trained ({unique_signs} signs, {total_samples} samples)"
+        self.learning_interface.feedback_color = (0, 255, 0)
     
     def cleanup(self) -> None:
         """Clean up resources"""
@@ -377,10 +454,18 @@ def main():
     print("=======================")
     
     # Check if camera is available
-    cap = cv2.VideoCapture(0)
+    print("Checking camera availability...")
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
     if not cap.isOpened():
-        print("Error: No camera found. Please connect a camera and try again.")
-        return
+        print("DirectShow backend failed, trying default...")
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            print("Error: No camera found. Please check:")
+            print("1. Camera is connected and not being used by another app")
+            print("2. Camera permissions are granted")
+            print("3. Try running as administrator")
+            return
+    print("Camera found and accessible!")
     cap.release()
     
     # Create and run the application
